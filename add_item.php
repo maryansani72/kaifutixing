@@ -2,6 +2,25 @@
 header('Content-Type: application/json; charset=utf-8');
 require_once 'db.php'; 
 
+function collectFieldLabels($node, array &$map): void {
+    if (!is_array($node)) {
+        return;
+    }
+
+    if (isset($node['label'], $node['props']) && is_array($node['props'])) {
+        $key = $node['props']['ui_data_uuid'] ?? $node['props']['resource_key'] ?? null;
+        if ($key) {
+            $map[$key] = $node['label'];
+        }
+    }
+
+    foreach ($node as $value) {
+        if (is_array($value)) {
+            collectFieldLabels($value, $map);
+        }
+    }
+}
+
 try {
     $url_input = $_POST['url'] ?? '';
     if (!preg_match('/detail\/(\d+)/', $url_input, $m)) {
@@ -52,11 +71,20 @@ try {
         }
     }
 
+    $field_labels = [];
+    if (isset($res['data']['modules'])) {
+        collectFieldLabels($res['data']['modules'], $field_labels);
+    }
+
     // 4. 强制入库
     $stmt = $pdo->prepare("REPLACE INTO feishu_tasks (work_item_id, title, owner, status, updated_at) VALUES (?, ?, ?, ?, ?)");
     $stmt->execute([$work_id, $title, $owner, $status, date("Y-m-d H:i:s")]);
 
-    echo json_encode(['status' => 'success', 'msg' => "添加成功：ID $work_id 已入库"]);
+    $response = ['status' => 'success', 'msg' => "添加成功：ID $work_id 已入库"];
+    if (!empty($_GET['include_labels'])) {
+        $response['field_labels'] = $field_labels;
+    }
+    echo json_encode($response, JSON_UNESCAPED_UNICODE);
 
 } catch (Exception $e) {
     echo json_encode(['status' => 'error', 'msg' => $e->getMessage()]);
