@@ -7,7 +7,7 @@ date_default_timezone_set('PRC'); // 设置为中国时区
 // 权限拦截
 $user_perms = json_decode($_SESSION['user']['permissions'] ?? '[]', true);
 if (!isset($_SESSION['user']) || ($_SESSION['user']['role'] !== 'admin' && !in_array('kf', $user_perms))) {
-    die("无权访问。 <a href='http://192.168.10.124/auth.php'>前往登录</a>");
+    die("无权访问。 <a href='http://zzyceshi.work/'>前往登录</a>");
 }
 
 // 连接本地 kf 库
@@ -102,19 +102,59 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 function autoLoginLeniu($pdo) {
+    // 1. 创建临时“饼干盒”文件存储 Cookie
+    $cookieFile = tempnam(sys_get_temp_dir(), 'ln_');
+    $ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+    $ch = curl_init();
+    
+    // --- 第一步：先刷一下登录页，领取 PHPSESSID ---
+    curl_setopt_array($ch, [
+        CURLOPT_URL => 'https://bloc.leniugame.com/Login',
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_USERAGENT => $ua,
+        CURLOPT_COOKIEJAR => $cookieFile, 
+    ]);
+    curl_exec($ch);
+
+    // --- 第二步：提交账号密码，并跟随 302 跳转获取完整 Token ---
     $loginUrl = 'https://bloc.leniugame.com/Login/account';
     $postData = 'ln_aaaaa=zhuizyan&ln_ddddd=5f05862b03f97c65b123b56f92d8a284d3e4971a82d4ee76baff98be6f0b1b83785cd91b6b0d9e92dcf7b8c9e71cbf9b2a6bf303fc82ab634473c6bc6c766f7f3eca9ccf5a759fb7971486299fc45cd6c2dd6ff35b45e1100c2c7a18cdd75b89a70163bbd037f48a8ab4c7e15afe591908e401a27910912292f91a5b3fffe808&user_name=&code=&codeType=1&__hash__=67cd93aa40c81b1e2eb4059182c172af_2c239120b8a73d3edbc74d6a20460dd6';
-    $ch = curl_init($loginUrl);
-    curl_setopt_array($ch, [CURLOPT_POST => true, CURLOPT_POSTFIELDS => $postData, CURLOPT_RETURNTRANSFER => true, CURLOPT_HEADER => true, CURLOPT_SSL_VERIFYPEER => false]);
-    $response = curl_exec($ch);
-    $headerSize = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
-    $header = substr($response, 0, $headerSize);
+
+    curl_setopt_array($ch, [
+        CURLOPT_URL => $loginUrl,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => $postData,
+        CURLOPT_COOKIEFILE => $cookieFile, // 带着第一步的 PHPSESSID 去登录
+        CURLOPT_COOKIEJAR => $cookieFile,  // 把新产生的 ln_auth 存进去
+        CURLOPT_FOLLOWLOCATION => true,    // 关键：跟随跳转，拿齐后续所有 Cookie
+        CURLOPT_REFERER => 'https://bloc.leniugame.com/Login',
+    ]);
+    curl_exec($ch);
     curl_close($ch);
-    preg_match_all('/Set-Cookie: (.*?);/i', $header, $matches);
-    if (!empty($matches[1])) {
-        $newCookie = implode('; ', array_unique($matches[1]));
-        $pdo->prepare("REPLACE INTO settings (key_name, key_value) VALUES ('ua_cookie', ?)")->execute([$newCookie]);
-        return $newCookie;
+
+    // --- 第三步：把“饼干盒”里的内容转成数据库需要的字符串 ---
+    if (file_exists($cookieFile)) {
+        $lines = file($cookieFile);
+        $cookieArray = [];
+        foreach ($lines as $line) {
+            if (substr($line, 0, 1) == '#' || trim($line) == '') continue;
+            $parts = preg_split("/\t/", $line);
+            if (isset($parts[5]) && isset($parts[6])) {
+                $cookieArray[trim($parts[5])] = trim($parts[6]);
+            }
+        }
+        @unlink($cookieFile); // 用完删掉临时文件
+
+        if (!empty($cookieArray)) {
+            $finalStr = "";
+            foreach ($cookieArray as $k => $v) $finalStr .= "$k=$v; ";
+            $finalStr = rtrim($finalStr, "; ");
+            
+            $pdo->prepare("REPLACE INTO settings (key_name, key_value) VALUES ('ua_cookie', ?)")->execute([$finalStr]);
+            return $finalStr;
+        }
     }
     return false;
 }
